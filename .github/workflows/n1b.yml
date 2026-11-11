@@ -1,0 +1,93 @@
+name: n1b
+
+on:
+  workflow_dispatch:
+    inputs:
+      dispatch_id:
+        description: "Dispatch id issued by the owner (n1b-<uuid v4>)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: n1b-single
+  cancel-in-progress: false
+
+jobs:
+  n1b:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: reviewed-sha
+        id: reviewed
+        env:
+          REVIEWED_SHA: ${{ vars.REVIEWED_SHA }}
+        run: |
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then echo "gate=fail reason=REF_MISMATCH"; exit 1; fi
+          if [[ ! "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] || [[ ! "$REVIEWED_SHA" =~ ^[0-9a-f]{40}$ ]] || [[ "$GITHUB_SHA" != "$REVIEWED_SHA" ]]; then echo "gate=fail reason=SHA_MISMATCH"; exit 1; fi
+          echo "gate=pass reason=OK"
+
+      - name: checkout
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: setup-node
+        id: node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: "22.23.4"
+          package-manager-cache: false
+
+      - name: install
+        id: install
+        run: npm ci --omit=dev --ignore-scripts
+
+      - name: gate
+        id: gate
+        env:
+          N1B_DISPATCH_ID: ${{ inputs.dispatch_id }}
+          REVIEWED_SHA: ${{ vars.REVIEWED_SHA }}
+        run: node scripts/run-gate.mjs
+
+      - name: g-validate
+        id: g
+        env:
+          N1B_CONN: ${{ secrets.NEON_N1B_TEST }}
+          N1B_EXPECTED_ROLE: ${{ vars.N1B_EXPECTED_ROLE }}
+          N1B_EXPECTED_LABEL: ${{ vars.N1B_EXPECTED_LABEL }}
+          N1B_EXPECTED_DB: ${{ vars.N1B_EXPECTED_DB }}
+          N1B_DENYLIST: ${{ vars.N1B_DENYLIST }}
+        run: node scripts/step-g.mjs
+
+      - name: h-connect
+        id: h
+        env:
+          N1B_CONN: ${{ secrets.NEON_N1B_TEST }}
+          N1B_EXPECTED_ROLE: ${{ vars.N1B_EXPECTED_ROLE }}
+          N1B_EXPECTED_LABEL: ${{ vars.N1B_EXPECTED_LABEL }}
+          N1B_EXPECTED_DB: ${{ vars.N1B_EXPECTED_DB }}
+          N1B_DENYLIST: ${{ vars.N1B_DENYLIST }}
+        run: node scripts/step-h.mjs
+
+      - name: finish
+        if: always()
+        env:
+          N1B_STEP_REVIEWED: ${{ steps.reviewed.outcome }}
+          N1B_STEP_CHECKOUT: ${{ steps.checkout.outcome }}
+          N1B_STEP_NODE: ${{ steps.node.outcome }}
+          N1B_STEP_INSTALL: ${{ steps.install.outcome }}
+          N1B_STEP_GATE: ${{ steps.gate.outcome }}
+          N1B_STEP_G: ${{ steps.g.outcome }}
+          N1B_STEP_H: ${{ steps.h.outcome }}
+          N1B_MARKER: ${{ steps.h.outputs.marker }}
+          N1B_DONE_G: ${{ steps.g.outputs.done }}
+          N1B_DONE_H: ${{ steps.h.outputs.done }}
+          N1B_SUMMARY_G: ${{ steps.g.outputs.summary }}
+          N1B_SUMMARY_H: ${{ steps.h.outputs.summary }}
+        run: node scripts/finish.mjs
